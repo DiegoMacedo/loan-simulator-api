@@ -1,29 +1,35 @@
 package br.com.diego.hackathon.simulador.service;
 
-import br.com.diego.hackathon.simulador.dto.Parcela;
-import br.com.diego.hackathon.simulador.dto.SimulacaoRequest;
-import br.com.diego.hackathon.simulador.dto.SimulacaoResponse;
-import br.com.diego.hackathon.simulador.dto.SimulacaoResult;
+import br.com.diego.hackathon.simulador.dto.*;
 import br.com.diego.hackathon.simulador.exception.ProdutoNaoEncontradoException;
 import br.com.diego.hackathon.simulador.model.Produto;
+import br.com.diego.hackathon.simulador.model.Simulacao;
 import br.com.diego.hackathon.simulador.repository.ProdutoRepository;
+import br.com.diego.hackathon.simulador.repository.SimulacaoRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class SimulacaoService {
 
     private final ProdutoRepository produtoRepository;
+    private final SimulacaoRepository simulacaoRepository;
 
     @Autowired
-    public SimulacaoService(ProdutoRepository produtoRepository) {
+    public SimulacaoService(ProdutoRepository produtoRepository, SimulacaoRepository simulacaoRepository) {
         this.produtoRepository = produtoRepository;
+        this.simulacaoRepository = simulacaoRepository;
     }
 
     // Método principal que orquestra a simulação
@@ -39,7 +45,10 @@ public class SimulacaoService {
         SimulacaoResult resultadoSac = calcularSac(request, produtoCompativel);
         SimulacaoResult resultadoPrice = calcularPrice(request, produtoCompativel);
 
-        // 4. Monta o objeto de resposta final
+        // 4. Salva a simulação no banco de dados
+        salvarSimulacao(request, produtoCompativel, resultadoSac, resultadoPrice);
+
+        // 5. Monta o objeto de resposta final
         return new SimulacaoResponse(produtoCompativel.getNome(), List.of(resultadoSac, resultadoPrice));
     }
 
@@ -95,5 +104,78 @@ public class SimulacaoService {
         }
 
         return new SimulacaoResult("PRICE", parcelas);
+    }
+
+    private void salvarSimulacao(SimulacaoRequest request, Produto produto, SimulacaoResult resultadoSac, SimulacaoResult resultadoPrice) {
+        // Calcula valores totais
+        BigDecimal valorTotalParcelas = resultadoSac.parcelas().stream()
+                .map(Parcela::valorPrestacao)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal valorTotalJuros = resultadoSac.parcelas().stream()
+                .map(Parcela::valorJuros)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal valorTotalAmortizacao = resultadoSac.parcelas().stream()
+                .map(Parcela::valorAmortizacao)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        Simulacao simulacao = new Simulacao();
+        simulacao.setIdSimulacao(UUID.randomUUID().toString());
+        simulacao.setValorDesejado(request.valorDesejado());
+        simulacao.setPrazo(request.prazo());
+        simulacao.setValorTotalParcelas(valorTotalParcelas);
+        simulacao.setDataSimulacao(LocalDateTime.now());
+        simulacao.setProduto(produto);
+        simulacao.setCodigoProduto(produto.getId());
+        simulacao.setDescricaoProduto(produto.getNome());
+        simulacao.setTaxaJuros(produto.getTaxaJuros());
+        simulacao.setValorAmortizacao(valorTotalAmortizacao);
+        simulacao.setValorTotalJuros(valorTotalJuros);
+        simulacao.setValorTotalGeral(valorTotalParcelas);
+
+        simulacaoRepository.save(simulacao);
+    }
+
+    public SimulacoesPorProdutoResponse buscarSimulacoesPorProdutoEData(Integer codigoProduto, LocalDate dataReferencia) {
+        LocalDateTime dataInicio = dataReferencia.atStartOfDay();
+        LocalDateTime dataFim = dataReferencia.atTime(23, 59, 59);
+        
+        List<Simulacao> simulacoes = simulacaoRepository.findByCodigoProdutoAndData(codigoProduto, dataInicio, dataFim);
+        
+        List<SimulacoesPorProdutoResponse.SimulacaoDetalhada> simulacoesDetalhadas = simulacoes.stream()
+                .map(s -> new SimulacoesPorProdutoResponse.SimulacaoDetalhada(
+                        s.getCodigoProduto(),
+                        s.getDescricaoProduto(),
+                        s.getTaxaJuros(),
+                        s.getValorAmortizacao(),
+                        s.getValorTotalJuros(),
+                        s.getValorTotalGeral()
+                ))
+                .collect(Collectors.toList());
+        
+        return new SimulacoesPorProdutoResponse(
+                dataReferencia.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                simulacoesDetalhadas
+        );
+    }
+
+    public TelemetriaResponse obterTelemetria(LocalDate dataReferencia) {
+        // Dados simulados de telemetria baseados na estrutura das imagens
+        List<TelemetriaResponse.DadosTelemetria> dadosTelemetria = List.of(
+                new TelemetriaResponse.DadosTelemetria(
+                        "simulacao",
+                        135,
+                        150,
+                        23,
+                        850,
+                        0.98
+                )
+        );
+        
+        return new TelemetriaResponse(
+                dataReferencia.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                dadosTelemetria
+        );
     }
 }
